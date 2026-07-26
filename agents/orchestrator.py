@@ -1,0 +1,484 @@
+"""
+agents/orchestrator.py
+=======================
+OrchestratorAgent — the brain of the multi-agent system.
+Decomposes goals → delegates to specialist agents → synthesises results.
+No tools of its own. Also contains:
+  • PersistentMemory (SQLite)
+  • AgencyEvaluator (novel 3-metric framework from v8.0)
+"""
+
+import json
+import math
+import re
+import sqlite3
+import time
+from collections import Counter
+from typing import Dict, List, Optional
+
+import pandas as pd
+
+from agents.risk_agent     import MineralIntelligenceAgent
+from agents.logistics_agent import HardwareDependencyAgent
+from agents.supplier_agent  import ScenarioReportingAgent
+from agents.echelon_agent   import SupplyChainEchelonAgent
+from services.mistral_service import get_mistral_service
+from services.knowledge_base  import (
+    SUPPLY_CHAIN, RISK_W, ISO3_MAP,
+    tool_assess_geo_risk, fetch_wb_stability,
+)
+from app.config import DB_PATH
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  PERSISTENT MEMORY — SQLite across sessions
+# ══════════════════════════════════════════════════════════════════════════
+
+class PersistentMemory:
+    """SQLite-backed memory. Agents accumulate knowledge across sessions."""
+
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+        self._init_db()
+
+    def _conn(self):
+        return sqlite3.connect(self.db_path)
+
+    def _init_db(self):
+        with self._conn() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS runs (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts         REAL,
+                    goal       TEXT,
+                    agent      TEXT,
+                    steps      INTEGER,
+                    tool_calls INTEGER,
+                    report     TEXT,
+                    tools_used TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS mineral_scores (
+                    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts      REAL,
+                    mineral TEXT,
+                    risk_w  INTEGER,
+                    geo_risk TEXT,
+                    run_id  INTEGER
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS country_stability (
+                    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts       REAL,
+                    country  TEXT,
+                    iso3     TEXT,
+                    wb_score REAL,
+                    region   TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_messages (
+                    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts       REAL,
+                    run_id   INTEGER,
+                    sender   TEXT,
+                    receiver TEXT,
+                    content  TEXT
+                )
+            """)
+            conn.commit()
+
+    def save_run(self, goal: str, agent: str, steps: int,
+                 tool_calls: int, report: str, tools_used: List[str]) -> int:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO runs(ts,goal,agent,steps,tool_calls,report,tools_used) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (time.time(), goal, agent, steps, tool_calls, report,
+                 json.dumps(tools_used)),
+            )
+            return cur.lastrowid
+
+    def save_mineral_snapshot(self, mineral: str, risk_w: int, geo_risk: str, run_id: int):
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO mineral_scores(ts,mineral,risk_w,geo_risk,run_id) VALUES(?,?,?,?,?)",
+                (time.time(), mineral, risk_w, geo_risk, run_id),
+            )
+
+    def save_country_stability(self, country: str, iso3: str, wb_score, region: str):
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO country_stability(ts,country,iso3,wb_score,region) VALUES(?,?,?,?,?)",
+                (time.time(), country, iso3, wb_score, region),
+            )
+
+    def get_previous_runs(self, limit: int = 5) -> List[Dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT ts, goal, agent, steps, tool_calls FROM runs "
+                "ORDER BY ts DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [{"ts": r[0], "goal": r[1], "agent": r[2],
+                 "steps": r[3], "tool_calls": r[4]} for r in rows]
+
+    def get_mineral_history(self, mineral: str) -> List[Dict]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT ts, risk_w, geo_risk FROM mineral_scores "
+                "WHERE mineral=? ORDER BY ts DESC LIMIT 10", (mineral,)
+            ).fetchall()
+        return [{"ts": r[0], "risk_w": r[1], "geo_risk": r[2]} for r in rows]
+
+    def get_latest_country_stability(self) -> pd.DataFrame:
+        try:
+            with self._conn() as conn:
+                return pd.read_sql(
+                    "SELECT country, wb_score, region, MAX(ts) as latest "
+                    "FROM country_stability GROUP BY country ORDER BY wb_score ASC",
+                    conn,
+                )
+        except Exception:
+            return pd.DataFrame()
+
+    def summary(self) -> str:
+        prev = self.get_previous_runs(3)
+        if not prev:
+            return "No previous runs in memory."
+        lines = [f"Previous analyses ({len(prev)} most recent):"]
+        for r in prev:
+            t = time.strftime("%Y-%m-%d %H:%M", time.localtime(r["ts"]))
+            lines.append(
+                f"  [{t}] {r['agent']}: '{r['goal'][:60]}' "
+                f"({r['steps']} steps, {r['tool_calls']} tool calls)"
+            )
+        return "\n".join(lines)
+
+    def get_all_runs(self) -> List[Dict]:
+        """Return all runs for the dashboard memory table."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, ts, goal, agent, steps, tool_calls, tools_used FROM runs "
+                "ORDER BY ts DESC"
+            ).fetchall()
+        return [
+            {
+                "id": r[0], "ts": r[1], "goal": r[2], "agent": r[3],
+                "steps": r[4], "tool_calls": r[5],
+                "tools_used": json.loads(r[6]) if r[6] else [],
+            }
+            for r in rows
+        ]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  AGENCY EVALUATION FRAMEWORK — novel v8.0 contribution
+# ══════════════════════════════════════════════════════════════════════════
+
+BASELINE_PIPELINE = [
+    "portfolio_overview", "map_dependencies", "trace_supply_chain",
+    "assess_geo_risk", "find_substitutes", "trace_full_chain",
+    "echelon_risk_profile", "identify_echelon_bottleneck", "list_scenarios",
+    "run_scenario", "get_recommendations", "finish",
+]
+
+TOOL_GOAL_KEYWORDS = {
+    "assess_geo_risk":              ["geo", "risk", "political", "restriction"],
+    "trace_supply_chain":           ["supply", "chain", "source", "tier"],
+    "find_substitutes":             ["substitute", "alternative", "resilience"],
+    "fetch_live_country_stability": ["country", "stability", "governance"],
+    "map_dependencies":             ["dependency", "mineral", "product", "gpu"],
+    "portfolio_overview":           ["portfolio", "overview", "all"],
+    "identify_chokepoints":         ["chokepoint", "concentration", "single"],
+    "compare_minerals":             ["compare", "mineral", "prioriti"],
+    "get_recommendations":          ["recommend", "action", "strategy"],
+    "list_scenarios":               ["scenario", "shock", "disruption"],
+    "run_scenario":                 ["scenario", "run", "simulate"],
+    "generate_report":              ["report", "executive", "board"],
+    "finish":                       ["complete", "done", "report"],
+    "trace_full_chain":             ["source", "mine", "factory", "warehouse", "retail", "customer", "chain", "end-to-end"],
+    "echelon_risk_profile":         ["echelon", "stage", "concentration", "warehouse", "retail"],
+    "identify_echelon_bottleneck":  ["bottleneck", "weakest", "chokepoint", "warehouse", "retail"],
+    "customer_demand_signal":       ["customer", "demand", "end-demand", "consumption"],
+    "list_data_sources":            ["source", "citation", "data", "authentic", "provenance"],
+}
+
+
+class AgencyEvaluator:
+    """
+    Three-metric agency evaluation framework (novel, v8.0).
+    Metrics: tool-call entropy, goal-step alignment, pipeline deviation.
+    """
+
+    @staticmethod
+    def tool_entropy(tool_calls: List[str]) -> float:
+        if not tool_calls:
+            return 0.0
+        freq = Counter(tool_calls)
+        total = len(tool_calls)
+        probs = [c / total for c in freq.values()]
+        raw = -sum(p * math.log2(p) for p in probs if p > 0)
+        max_e = math.log2(len(freq)) if len(freq) > 1 else 1.0
+        return round(raw / max_e, 4) if max_e > 0 else 0.0
+
+    @staticmethod
+    def goal_alignment(goal: str, tool_calls: List[str]) -> float:
+        if not tool_calls:
+            return 0.0
+        goal_words = set(w for w in re.findall(r"[a-z]+", goal.lower()) if len(w) > 3)
+        aligned = sum(
+            1 for tc in tool_calls
+            if any(any(gw in kw for gw in goal_words)
+                   for kw in TOOL_GOAL_KEYWORDS.get(tc, []))
+        )
+        return round(aligned / len(tool_calls), 4)
+
+    @staticmethod
+    def pipeline_deviation(tool_calls: List[str]) -> float:
+        if not tool_calls:
+            return 0.0
+        a, b = tool_calls, BASELINE_PIPELINE
+        m, n = len(a), len(b)
+        dp = [[0] * (n + 1) for _ in range(m + 1)]
+        for i in range(1, m + 1):
+            for j in range(1, n + 1):
+                dp[i][j] = dp[i-1][j-1] + 1 if a[i-1] == b[j-1] else max(dp[i-1][j], dp[i][j-1])
+        lcs = dp[m][n]
+        return round(1.0 - lcs / max(m, n), 4)
+
+    def compute(self, goal: str, tool_calls: List[str]) -> Dict:
+        entropy   = self.tool_entropy(tool_calls)
+        alignment = self.goal_alignment(goal, tool_calls)
+        deviation = self.pipeline_deviation(tool_calls)
+        composite = round(0.4 * entropy + 0.4 * alignment + 0.2 * deviation, 4)
+        tier = (
+            "HIGHLY AGENTIC"     if composite >= 0.75 else
+            "MODERATELY AGENTIC" if composite >= 0.50 else
+            "PIPELINE-LIKE"      if composite >= 0.25 else
+            "NON-AGENTIC"
+        )
+        return {
+            "tool_entropy":       entropy,
+            "goal_alignment":     alignment,
+            "pipeline_deviation": deviation,
+            "composite_score":    composite,
+            "agency_tier":        tier,
+            "n_tool_calls":       len(tool_calls),
+            "n_unique_tools":     len(set(tool_calls)),
+            "tool_distribution":  dict(Counter(tool_calls).most_common()),
+        }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  ORCHESTRATOR AGENT
+# ══════════════════════════════════════════════════════════════════════════
+
+ORCHESTRATOR_SYSTEM = """You are the Orchestrator Agent for an AI hardware supply chain
+resilience system. You have four specialist agents available:
+
+  1. Mineral Intelligence Agent — geo-risk, supply chains, substitutes, live stability data
+  2. Hardware Dependency Agent  — product-mineral mapping, portfolio risk, chokepoints
+  3. Supply Chain Echelon Agent — full Source(Mine)->Factory->Distribution->Warehouse->
+     Retail->Customer chain tracing, echelon-level bottlenecks, end-customer demand,
+     and authentic data-source citations
+  4. Scenario & Reporting Agent — supply-shock scenarios, executive report generation
+
+Your role:
+  • Decompose the user goal into sub-tasks
+  • Decide which agent to call in what order (the Supply Chain Echelon Agent
+    should normally run after the Mineral Intelligence Agent and before the
+    Scenario & Reporting Agent, so its echelon-level findings feed the report)
+  • Pass relevant context between agents
+  • Synthesise their outputs into a final answer
+
+You do NOT call any tools yourself. You reason about delegation only.
+When you have a complete plan ready to execute, respond in this exact JSON format:
+{
+  "delegation_plan": [
+    {"agent": "<agent name>", "task": "<specific sub-task>", "context": "<what to pass>"},
+    ...
+  ],
+  "reasoning": "<why you chose this sequence>"
+}
+"""
+
+
+class OrchestratorAgent:
+    """
+    Multi-agent coordinator.
+    Decomposes goals → delegates to specialists → synthesises results.
+    No tools — reasoning only.
+    Saves all runs to persistent memory.
+    """
+
+    AGENT_MAP = {
+        "Mineral Intelligence Agent": MineralIntelligenceAgent,
+        "Hardware Dependency Agent":  HardwareDependencyAgent,
+        "Supply Chain Echelon Agent": SupplyChainEchelonAgent,
+        "Scenario & Reporting Agent": ScenarioReportingAgent,
+    }
+
+    def __init__(self, verbose: bool = True):
+        self.verbose   = verbose
+        self.memory    = PersistentMemory()
+        self.evaluator = AgencyEvaluator()
+        self._svc      = get_mistral_service()
+
+    def _log(self, msg: str):
+        if self.verbose:
+            print(msg)
+
+    def _plan(self, goal: str) -> List[Dict]:
+        """Ask the LLM to produce a delegation plan for this goal."""
+        prev_summary = self.memory.summary()
+        messages = [
+            {"role": "system", "content": ORCHESTRATOR_SYSTEM},
+            {"role": "user",   "content":
+                f"GOAL: {goal}\n\nMEMORY CONTEXT:\n{prev_summary}\n\n"
+                "Produce a delegation plan as JSON."},
+        ]
+        raw  = self._svc.chat(messages, max_tokens=800)
+        text = self._svc.extract_text(raw)
+
+        try:
+            clean = re.sub(r"```(?:json)?", "", text).strip().rstrip("```").strip()
+            plan  = json.loads(clean)
+            return plan.get("delegation_plan", [])
+        except Exception:
+            self._log(f"  [ORCH] JSON parse failed — using default plan.")
+            return [
+                {"agent": "Hardware Dependency Agent",
+                 "task": f"Analyse hardware products relevant to: {goal}", "context": ""},
+                {"agent": "Mineral Intelligence Agent",
+                 "task": f"Analyse mineral risks relevant to: {goal}", "context": ""},
+                {"agent": "Supply Chain Echelon Agent",
+                 "task": f"Trace the full source-to-customer chain and identify the "
+                          f"weakest echelon for the minerals relevant to: {goal}", "context": ""},
+                {"agent": "Scenario & Reporting Agent",
+                 "task": f"Run scenarios and produce executive report for: {goal}", "context": ""},
+            ]
+
+    def run(self, goal: str) -> Dict:
+        """
+        Full orchestrated run.
+        Returns consolidated result with all agent outputs, agency scores, and run_id.
+        """
+        self._log("\n" + "═" * 65)
+        self._log("  🎯 ORCHESTRATOR — Multi-Agent Run v8.0")
+        self._log(f"  Goal: {goal[:90]}")
+        self._log("═" * 65)
+
+        # Step 1: Plan
+        self._log("\n  📋 Step 1: Generating delegation plan…")
+        plan = self._plan(goal)
+        self._log(f"  Plan: {len(plan)} agent tasks")
+        for i, step in enumerate(plan, 1):
+            self._log(f"    {i}. {step['agent']}: {step['task'][:60]}")
+
+        # Step 2: Execute
+        agent_results: Dict[str, Dict] = {}
+        accumulated_context = ""
+        total_steps = total_tool_calls = 0
+
+        for step in plan:
+            agent_name = step.get("agent", "")
+            task       = step.get("task", "")
+            ctx        = step.get("context", "") + "\n" + accumulated_context
+
+            agent = self.AGENT_MAP.get(agent_name)
+            if not agent:
+                self._log(f"  ⚠️  Unknown agent: {agent_name} — skipping.")
+                continue
+
+            self._log(f"\n  {'─' * 60}")
+            self._log(f"  🤖 Delegating to: {agent_name}")
+            self._log(f"  Task: {task[:70]}")
+            self._log(f"  {'─' * 60}")
+
+            result = agent.run(task, context=ctx)
+            agent_results[agent_name] = result
+            total_steps      += result["steps"]
+            total_tool_calls += result["tool_calls"]
+
+            summary = (result["result"].get("report", "")
+                       or json.dumps(result["result"], default=str)[:500])
+            accumulated_context += f"\n--- {agent_name} output ---\n{summary}\n"
+
+        # Step 3: Synthesise
+        self._log("\n  📝 Step 3: Synthesising final report…")
+        final_report = self._synthesise(goal, agent_results, accumulated_context)
+
+        # Step 4: Agency evaluation
+        tc_sequence = []
+        for ar in agent_results.values():
+            tc_sequence.extend(ar["scratch"].tool_calls())
+        agency_scores = self.evaluator.compute(goal, tc_sequence)
+
+        # Step 5: Persist
+        all_tools = []
+        for r in agent_results.values():
+            all_tools.extend(r["tools_used"])
+        unique_tools = list(dict.fromkeys(all_tools))
+
+        run_id = self.memory.save_run(
+            goal=goal,
+            agent="Orchestrator (Multi-Agent)",
+            steps=total_steps,
+            tool_calls=total_tool_calls,
+            report=final_report,
+            tools_used=unique_tools,
+        )
+        # Save mineral snapshots
+        for mineral in SUPPLY_CHAIN:
+            geo = tool_assess_geo_risk(mineral)
+            self.memory.save_mineral_snapshot(mineral, RISK_W.get(mineral, 1), geo["risk_level"], run_id)
+        # Save country stability
+        for country, iso3 in list(ISO3_MAP.items())[:8]:
+            score = fetch_wb_stability(iso3)
+            if score is not None:
+                from services.knowledge_base import fetch_country_info
+                ci = fetch_country_info(country)
+                region = ci["region"] if ci else "Unknown"
+                self.memory.save_country_stability(country, iso3, score, region)
+
+        self._log(f"\n  💾 Run #{run_id} saved to persistent memory.")
+        self._log("\n" + "═" * 65)
+        self._log("  ✅ Multi-Agent Run Complete")
+        self._log(f"  Agents invoked  : {len(agent_results)}")
+        self._log(f"  Total steps     : {total_steps}")
+        self._log(f"  Total tool calls: {total_tool_calls}")
+        self._log(f"  Agency score    : {agency_scores['composite_score']} ({agency_scores['agency_tier']})")
+        self._log("═" * 65)
+
+        return {
+            "goal":             goal,
+            "plan":             plan,
+            "agent_results":    agent_results,
+            "final_report":     final_report,
+            "total_steps":      total_steps,
+            "total_tool_calls": total_tool_calls,
+            "unique_tools":     unique_tools,
+            "run_id":           run_id,
+            "agency_scores":    agency_scores,
+        }
+
+    def _synthesise(self, goal: str, agent_results: Dict, context: str) -> str:
+        """Synthesise agent outputs into one executive report."""
+        scenario_res = agent_results.get("Scenario & Reporting Agent", {})
+        sr_result    = scenario_res.get("result", {})
+        if sr_result.get("report"):
+            return sr_result["report"]
+        if sr_result.get("status") == "COMPLETE":
+            return sr_result.get("report", context[:2000])
+        # Fallback: LLM synthesis
+        messages = [
+            {"role": "system", "content":
+                "You are a senior supply chain analyst. Synthesise the agent findings "
+                "below into a concise board-ready executive report (400-600 words). "
+                "Include: Risk Summary, Key Chokepoints, Scenario Findings, Recommendations."},
+            {"role": "user", "content": f"GOAL: {goal}\n\nAGENT FINDINGS:\n{context[:3000]}"},
+        ]
+        raw = self._svc.chat(messages, max_tokens=800)
+        return self._svc.extract_text(raw) or "Report generation incomplete."

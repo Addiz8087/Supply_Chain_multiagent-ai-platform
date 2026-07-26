@@ -1,0 +1,16 @@
+# Secrets — never commit these
+.env
+.streamlit/secrets.toml
+
+# Python / venv
+venv/
+__pycache__/
+*.pyc
+pyvenv.cfg
+
+# Local persistent memory DB
+data/*.db
+
+# OS / editor
+.DS_Store
+.vscode/
