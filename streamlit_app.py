@@ -47,6 +47,7 @@ from services.echelon_knowledge import (
     tool_identify_echelon_bottleneck, tool_customer_demand_signal,
 )
 from services.data_sources import list_sources
+from services.usgs_reference import VERIFIED_PRODUCTION
 from services.live_data import (
     fetch_all_prices, fetch_live_price, production_map_data,
     PRODUCTION_DATA, STATIC_PRICES,
@@ -266,10 +267,6 @@ elif page == "🤖 Run Analysis":
 
     if run_btn and goal.strip():
         with st.spinner("Orchestrating agents…"):
-            log_lines = []
-            result_holder = {}
-
-            # Run in real time — capture stdout via a progress area
             progress = st.empty()
             progress.info("Step 1/3 — Orchestrator generating delegation plan…")
 
@@ -278,11 +275,20 @@ elif page == "🤖 Run Analysis":
             try:
                 progress.info("Step 2/3 — Specialist agents executing tasks…")
                 result = orch.run(goal)
-                result_holder = result
+                # Save the result so it survives page switches / reruns
+                st.session_state["last_analysis_result"] = result
                 progress.success(f"✅ Analysis complete — Run #{result['run_id']}")
             except Exception as e:
                 st.error(f"Analysis failed: {e}")
                 st.stop()
+
+    elif run_btn and not goal.strip():
+        st.warning("Please enter a goal before running.")
+
+    # ── Show the most recent result, even after switching to another page
+    #    and coming back — pulled from session_state, not a local variable
+    if "last_analysis_result" in st.session_state:
+        result_holder = st.session_state["last_analysis_result"]
 
         st.divider()
 
@@ -336,9 +342,6 @@ elif page == "🤖 Run Analysis":
             for i, step in enumerate(result_holder["plan"], 1):
                 st.markdown(f"**{i}. {step['agent']}**")
                 st.caption(step["task"])
-
-    elif run_btn and not goal.strip():
-        st.warning("Please enter a goal before running.")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -885,6 +888,25 @@ elif page == "📚 Data Sources":
             st.caption(f"Type: {src['type']}  ·  Update cycle: {src['update_cycle']}")
             st.write(src["covers"])
             st.markdown(f"[{src['url']}]({src['url']})")
+    st.divider()
+    st.markdown("#### ✅ Manually Verified Figures (USGS MCS 2025)")
+    st.caption(
+        "The reference PDF is bundled directly in this repo at "
+        "`data/reference_docs/mcs2025.pdf` — not just cited from memory. "
+        "The figures below have been individually cross-checked line-by-line "
+        "against its published tables, with the exact page number recorded, "
+        "as distinct from estimated/unverified figures used elsewhere."
+    )
+    for mineral, vdata in VERIFIED_PRODUCTION.items():
+        with st.container(border=True):
+            st.markdown(f"**{mineral}** — verified against page {vdata['page']}")
+            st.caption(f"{vdata['source']} · {vdata['unit']} · {vdata['year']}")
+            vp_df = pd.DataFrame({
+                "Country": list(vdata["countries"].keys()),
+                "Production": list(vdata["countries"].values()),
+            }).sort_values("Production", ascending=False)
+            st.dataframe(vp_df, use_container_width=True, hide_index=True)
+            st.markdown(f"[View source PDF]({vdata['source_url']})")
 
     st.divider()
     st.markdown("#### How provenance is enforced in this codebase")
