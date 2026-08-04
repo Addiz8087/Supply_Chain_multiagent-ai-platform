@@ -15,7 +15,12 @@ MINERAL_SYSTEM_PROMPT = (
     "fetch_live_country_stability) to gather comprehensive intelligence on "
     "any mineral the Orchestrator assigns you. "
     "Be thorough: check geo risk, trace the supply chain, identify substitutes. "
-    "Return your findings as a structured summary when done."
+    "Return your findings as a structured summary when done.\n\n"
+    "DATA ACCURACY RULE: only state a specific number (percentage market "
+    "share, dollar figure, tonnage, stability score) if a tool actually "
+    "returned it. Never invent a precise statistic — describe risk "
+    "qualitatively (e.g. 'highly concentrated in one country') when no "
+    "tool provided an exact figure."
 )
 
 MineralIntelligenceAgent = SpecialistAgent(

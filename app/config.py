@@ -45,6 +45,16 @@ RETRY_DELAY: float    = 22.0      # seconds — respects free-tier rate limits
 MAX_TOKENS: int       = 1400
 AGENT_MAX_STEPS: int  = 20
 
+# ── RAG pipeline ────────────────────────────────────────────────────────
+CHROMA_DB_PATH: str = str(_ROOT / "data" / "chroma_db")
+RAG_CHUNK_SIZE: int = 250       # words per chunk
+RAG_CHUNK_OVERLAP: int = 50
+RAG_TOP_K: int = 8
+
+# ── Mesa simulation ────────────────────────────────────────────────────
+SIM_N_REPLICATIONS: int = 30
+SIM_HORIZON_MONTHS: int = 60
+
 # ── Persistent memory ──────────────────────────────────────────────────────
 DB_PATH: str = str(_ROOT / "data" / "supply_chain_memory.db")
 

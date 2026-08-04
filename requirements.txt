@@ -4,3 +4,7 @@ plotly
 requests
 python-dotenv
 yfinance
+chromadb>=0.5.0
+mesa==2.3.4
+scipy>=1.11
+pypdf>=4.0

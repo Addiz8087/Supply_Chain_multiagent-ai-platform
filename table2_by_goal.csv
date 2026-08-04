@@ -1,0 +1,11 @@
+Goal,n runs,Mean composite,Min,Max
+Trace full source-to-customer chain for a smartphone chipset,2,0.6741,0.6528,0.6953
+"Assess supply chain resilience of NVIDIA AI GPU, board-ready",7,0.6579,0.6302,0.6819
+Assess supply chain resilience of an AI server's memory chip,2,0.6348,0.5938,0.6759
+Compare mineral risk for silicon vs rare earths in AI chip p,2,0.5989,0.5389,0.6589
+Simulate a Taiwan semiconductor disruption scenario,2,0.5881,0.5864,0.5898
+"Assess resilience of AMD AI GPU, board-ready report",2,0.5863,0.5613,0.6113
+"Analyse geopolitical risk for Gallium, Germanium, Rare Earth",2,0.5641,0.5539,0.5743
+Simulate a China gallium export ban and its impact on AI har,2,0.5583,0.5521,0.5644
+Identify chokepoints across an AI datacentre hardware portfo,2,0.5398,0.5288,0.5508
+Analyse geopolitical risk for Cobalt and Lithium in EV batte,2,0.5331,0.5256,0.5406

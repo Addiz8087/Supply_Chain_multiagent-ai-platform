@@ -1,0 +1,53 @@
+Country Name,Country Code,Series Name,Series Code,2024 [YR2024]
+China,CHN,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-0.153336399999999
+"Taiwan, China",TWN,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.9166715
+"Hong Kong SAR, China",HKG,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.6310985
+United Arab Emirates,ARE,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.7886704
+United Kingdom,GBR,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.2577085
+United States,USA,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-0.0951125
+Russian Federation,RUS,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-0.903284699999999
+Australia,AUS,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.7932693
+Chile,CHL,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.1213566
+"Congo, Dem. Rep.",COD,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-2.1191762
+"Congo, Rep.",COG,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-0.2584147
+Germany,DEU,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.1242671
+"Korea, Dem. People's Rep.",PRK,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.3220654
+"Korea, Rep.",KOR,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.6393495
+Belgium,BEL,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.1214526
+Brazil,BRA,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-0.5205702
+Myanmar,MMR,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-2.0903985
+Mozambique,MOZ,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-1.7581974
+Madagascar,MDG,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-0.4805584
+Canada,CAN,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.5984769
+Norway,NOR,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.9032646
+Peru,PER,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-0.6544223
+Philippines,PHL,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-0.7741477
+Argentina,ARG,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-0.169745999999999
+Indonesia,IDN,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-0.609127499999999
+Zambia,ZMB,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-0.1007849
+Zimbabwe,ZWE,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-1.0172382
+Cuba,CUB,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.3155266
+Japan,JPN,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,1.1343228
+Finland,FIN,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.8325695
+India,IND,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,-0.785762499999999
+New Caledonia,NCL,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,1.0976197
+Netherlands,NLD,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.4281196
+Switzerland,CHE,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.9806678
+Malaysia,MYS,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,0.3847799
+Singapore,SGP,Political Stability - Governance estimate (approx. -2.5 to +2.5),GOV_WGI_PV.EST,1.2318778
+,,,,
+,,,,
+,,,,
+Data from database: Worldwide Governance Indicators,,,,
+Last Updated: 03/18/2026,,,,
+Code,License Type,Indicator Name,Long definition,Source,Topic,Periodicity,Aggregation method,Other notes,License URL
+GOV_WGI_PV.EST,CC BY-4.0,Political Stability - Governance estimate (approx. -2.5 to +2.5),"Political Stability (PV) captures perceptions of the extent to which political power and governance are secure from destabilization, and of the likelihood that authority will be challenged or altered through violent, coercive, or unconstitutional means. Governance estimate from the aggregation model, in units of a standard normal distribution, i.e. ranging from approximately -2.5 to 2.5. Larger values correspond to better governance.","Detailed documentation of the WGI, interactive tools for exploring the data, and full access to the underlying source data available at www.govindicators.org. Worldwide Governance Indicators, 2025 Revision, World Bank (www.govindicators.org), Accessed on 12/15/2025. And: World Bank (2025). “The Worldwide Governance Indicators: Revised Methodology for Measuring Governance Using Perception Data.” Washington, DC: World Bank Group. The 2025 revision builds upon the original WGI methodology which was introduced in 1999 and summarized by the following paper: Kaufmann, Daniel & Aart C. Kraay. (2024). “The Worldwide Governance Indicators: Methodology and 2024 Update.” Policy Research Working Paper. Washington, DC: World Bank Group.",Political Stability,Annual,"Indicators, from the underlying data sources, are aggregated using the Unobserved Components Model (UCM). The UCM is essentially a weighted average, resulting in a governance estimate at the country level.","The following are the key steps:
+STEP 1:  Assigning indicators from the underlying sources to the six governance dimensions.  Individual questions or variables from the underlying data sources are mapped to up to two of the six governance dimensions.
+STEP 2:  Rescaling the individual source data to range from 0 to 1.  Each question from the underlying data sources is rescaled to range from 0 to 1, with higher values corresponding to better governance outcomes.
+STEP 3:  Using an Unobserved Components Model to construct a governance estimate for each dimension by taking a weighted average of the source-by-dimension data. To aggregate data across multiple sources, the WGI uses a statistical technique known as an Unobserved Components Model (UCM).
+STEP 4:  Transforming the UCM-generated governance estimates to a 0–100 absolute governance score. The WGI transform the governance estimates for each country, year, and dimension—typically ranging from approximately –2.5 to 2.5 —into absolute scores on a 0–100 scale, with 100 representing the best absolute governance performance.
+
+The following is a summary of the methodology:
+https://www.worldbank.org/en/publication/worldwide-governance-indicators/documentation#3
+The following is detailed description of the methodology:
+https://www.worldbank.org/content/dam/sites/govindicators/doc/The%20Worldwide%20Governance%20Indicators%202025%20Methodology%20Revision.pdf",https://datacatalog.worldbank.org/public-licenses#cc-by

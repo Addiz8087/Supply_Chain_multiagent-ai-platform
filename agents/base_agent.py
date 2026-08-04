@@ -168,7 +168,13 @@ class SpecialistAgent:
                 ),
             })
 
-            raw  = self._svc.chat(messages, tools=self.tool_schemas, tool_choice="auto", max_tokens=1000)
+            # max_tokens raised from 1000 to 2200 — when an agent calls
+            # finish(report=...), the full report text is generated as
+            # part of THIS SAME response (it's a tool-call argument), so
+            # a low cap here truncates long reports mid-sentence. 2200
+            # comfortably fits a full executive report + the tool-call
+            # JSON wrapper around it.
+            raw  = self._svc.chat(messages, tools=self.tool_schemas, tool_choice="auto", max_tokens=2200)
             msg  = raw["choices"][0]["message"]
             tcs  = msg.get("tool_calls") or []
             text = (msg.get("content") or "").strip()
@@ -178,7 +184,14 @@ class SpecialistAgent:
                 self._log(f"💭 {text[:120]}")
 
             if not tcs:
-                if step_n >= self.max_steps:
+                # No tool call in this response. If the agent has already
+                # made at least one real tool call earlier in this run,
+                # a response with no tool call is the model saying "I'm
+                # done" — stop instead of burning the remaining step
+                # budget asking it to repeat itself in plain text.
+                # (If it hasn't called any tool yet, this might just be
+                # an upfront planning turn, so keep going as before.)
+                if step_n >= self.max_steps or scratch.tool_calls():
                     done = True
                 continue
 

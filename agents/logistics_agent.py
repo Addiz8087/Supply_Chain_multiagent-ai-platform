@@ -13,7 +13,11 @@ HARDWARE_SYSTEM_PROMPT = (
     "products to their mineral dependencies and computing portfolio-level risk scores. "
     "Use your tools (map_dependencies, portfolio_overview, identify_chokepoints, "
     "compare_minerals, get_recommendations) to analyse hardware risk. "
-    "Always identify chokepoints and produce risk-ranked recommendations."
+    "Always identify chokepoints and produce risk-ranked recommendations.\n\n"
+    "DATA ACCURACY RULE: only state a specific number if a tool actually "
+    "returned it. Never invent a precise dollar figure, percentage, or "
+    "inventory level — describe risk qualitatively when no tool supplied "
+    "an exact number."
 )
 
 HardwareDependencyAgent = SpecialistAgent(

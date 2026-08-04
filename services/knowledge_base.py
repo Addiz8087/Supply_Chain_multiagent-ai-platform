@@ -25,8 +25,12 @@ from app.config import MISTRAL_API_KEY  # noqa: F401 (ensures .env is loaded)
 _API_CACHE: Dict[str, Any] = {}
 
 
-def _cached_get(url: str, timeout: int = 15) -> Any:
-    """GET with in-memory cache. Returns parsed JSON or None on failure."""
+def _cached_get(url: str, timeout: int = 15, debug_label: str = "") -> Any:
+    """GET with in-memory cache. Returns parsed JSON or None on failure.
+    Prints a one-line diagnostic on failure so silent API errors are
+    visible in the console instead of just showing up as 'unavailable'
+    everywhere downstream with no explanation.
+    """
     if url in _API_CACHE:
         return _API_CACHE[url]
     try:
@@ -39,8 +43,17 @@ def _cached_get(url: str, timeout: int = 15) -> Any:
             data = r.json()
             _API_CACHE[url] = data
             return data
-    except Exception:
-        pass
+        else:
+            print(f"  ⚠️  [{debug_label or 'API'}] HTTP {r.status_code} for {url}")
+            print(f"      Response: {r.text[:300]}")
+    except requests.exceptions.Timeout:
+        print(f"  ⚠️  [{debug_label or 'API'}] TIMEOUT after {timeout}s for {url}")
+    except requests.exceptions.ConnectionError as e:
+        print(f"  ⚠️  [{debug_label or 'API'}] CONNECTION FAILED for {url}")
+        print(f"      This usually means a network/firewall block, not a code bug.")
+        print(f"      Detail: {str(e)[:200]}")
+    except Exception as e:
+        print(f"  ⚠️  [{debug_label or 'API'}] UNEXPECTED ERROR for {url}: {e}")
     return None
 
 
@@ -50,31 +63,125 @@ ISO3_MAP: Dict[str, str] = {
     "China": "CHN", "Russia": "RUS", "Australia": "AUS",
     "Chile": "CHL", "Indonesia": "IDN", "DRC": "COD",
     "Democratic Republic of Congo": "COD",
+    "Democratic Republic of the Congo": "COD",
+    "Congo": "COD", "DR Congo": "COD",
     "USA": "USA", "Germany": "DEU", "South Korea": "KOR",
     "Belgium": "BEL", "Brazil": "BRA",
     "Myanmar": "MMR", "Mozambique": "MOZ", "Madagascar": "MDG",
     "UAE": "ARE", "Canada": "CAN", "Norway": "NOR",
     "Peru": "PER", "Philippines": "PHL",
+    "Argentina": "ARG", "Taiwan": "TWN",
 }
+
+# ── STATIC FALLBACK: World Bank Worldwide Governance Indicators ───────────
+# Political Stability & Absence of Violence/Terrorism: Estimate (-2.5 to +2.5)
+# Downloaded directly from https://databank.worldbank.org/source/worldwide-governance-indicators
+# Series: GOV_WGI_PV.EST | Year: 2024 | Dataset last updated: 2026-03-18
+#
+# Why this exists: the live World Bank API endpoint used by
+# fetch_wb_stability() consistently returns an "indicator not found"
+# error for PV.EST across every country tested (confirmed via direct
+# diagnostic testing — see console output / dissertation Appendix).
+# Rather than silently showing "unavailable" to the user, this static
+# table — manually downloaded from the SAME official World Bank source,
+# just via the DataBank web interface instead of the broken API
+# endpoint — is used as a cited fallback, following the same two-tier
+# live-then-static pattern already used for mineral prices in
+# services/live_data.py (STATIC_PRICES).
+STATIC_STABILITY_2024: Dict[str, float] = {
+    "CHN": -0.1533, "TWN": 0.9167, "HKG": 0.6311, "ARE": 0.7887,
+    "GBR": 0.2577, "USA": -0.0951, "RUS": -0.9033, "AUS": 0.7933,
+    "CHL": 0.1214, "COD": -2.1192, "COG": -0.2584, "DEU": 0.1243,
+    "PRK": 0.3221, "KOR": 0.6393, "BEL": 0.1215, "BRA": -0.5206,
+    "MMR": -2.0904, "MOZ": -1.7582, "MDG": -0.4806, "CAN": 0.5985,
+    "NOR": 0.9033, "PER": -0.6544, "PHL": -0.7741, "ARG": -0.1697,
+    "IDN": -0.6091, "ZMB": -0.1008, "ZWE": -1.0172, "CUB": 0.3155,
+    "JPN": 1.1343, "FIN": 0.8326, "IND": -0.7858, "NCL": 1.0976,
+    "NLD": 0.4281, "CHE": 0.9807, "MYS": 0.3848, "SGP": 1.2319,
+}
+STATIC_STABILITY_SOURCE = "World Bank Worldwide Governance Indicators (DataBank), 2024"
+STATIC_STABILITY_URL = "https://databank.worldbank.org/source/worldwide-governance-indicators"
 
 
 def fetch_wb_stability(country_iso3: str) -> Optional[float]:
-    """World Bank Political Stability score (-2.5 to +2.5). None if unavailable."""
-    url = (
+    """
+    World Bank Political Stability score (-2.5 to +2.5).
+    Tries the live API first (two URL variants); falls back to the
+    manually-downloaded, cited static table (STATIC_STABILITY_2024) if
+    the live call fails. Returns None only if BOTH the live call and
+    the static table have no entry for this country — genuinely no
+    data available, not just an API hiccup.
+    """
+    urls_to_try = [
+        (
+            f"https://api.worldbank.org/v2/country/{country_iso3}/indicator/"
+            f"{WB_INDICATOR}?format=json&mrv=1&per_page=1&source=3",
+            "source=3 (WGI catalog)",
+        ),
+        (
+            f"https://api.worldbank.org/v2/country/{country_iso3}/indicator/"
+            f"{WB_INDICATOR}?format=json&mrv=1&per_page=1",
+            "default catalog",
+        ),
+    ]
+
+    for url, label in urls_to_try:
+        data = _cached_get(url, debug_label=f"World Bank PV.EST/{country_iso3} [{label}]")
+        if data is None:
+            continue
+        try:
+            return data[1][0]["value"]
+        except (IndexError, KeyError, TypeError):
+            continue
+
+    # Live API failed on all variants — use the cited static fallback.
+    if country_iso3 in STATIC_STABILITY_2024:
+        return STATIC_STABILITY_2024[country_iso3]
+
+    return None
+
+
+def fetch_wb_stability_with_provenance(country_iso3: str) -> Dict:
+    """
+    Same as fetch_wb_stability but also reports whether the value came
+    from the live API or the cited static fallback, so the UI/report
+    can be honest about data provenance instead of presenting a static
+    figure as if it were live.
+    """
+    urls_to_try = [
         f"https://api.worldbank.org/v2/country/{country_iso3}/indicator/"
-        f"{WB_INDICATOR}?format=json&mrv=1&per_page=1"
-    )
-    data = _cached_get(url)
-    try:
-        return data[1][0]["value"]
-    except Exception:
-        return None
+        f"{WB_INDICATOR}?format=json&mrv=1&per_page=1&source=3",
+        f"https://api.worldbank.org/v2/country/{country_iso3}/indicator/"
+        f"{WB_INDICATOR}?format=json&mrv=1&per_page=1",
+    ]
+    for url in urls_to_try:
+        data = _cached_get(url, debug_label=f"World Bank PV.EST/{country_iso3}")
+        if data is None:
+            continue
+        try:
+            return {
+                "value": data[1][0]["value"],
+                "is_live": True,
+                "source": "World Bank API (live)",
+            }
+        except (IndexError, KeyError, TypeError):
+            continue
+
+    if country_iso3 in STATIC_STABILITY_2024:
+        return {
+            "value": STATIC_STABILITY_2024[country_iso3],
+            "is_live": False,
+            "source": STATIC_STABILITY_SOURCE,
+            "source_url": STATIC_STABILITY_URL,
+        }
+
+    return {"value": None, "is_live": False, "source": "unavailable — no live or static data"}
 
 
 def fetch_country_info(country_name: str) -> Optional[Dict]:
     """Fetch region, subregion, population from REST Countries API."""
     url = f"https://restcountries.com/v3.1/name/{requests.utils.quote(country_name)}?fullText=true"
-    data = _cached_get(url)
+    data = _cached_get(url, debug_label=f"RestCountries/{country_name}")
     if data and isinstance(data, list) and len(data) > 0:
         c = data[0]
         return {
@@ -88,18 +195,22 @@ def fetch_country_info(country_name: str) -> Optional[Dict]:
 
 def fetch_stability_for_country(country: str) -> Dict:
     """Combine REST Countries + World Bank stability data for a country."""
-    iso3  = ISO3_MAP.get(country, country[:3].upper())
-    score = fetch_wb_stability(iso3)
-    ci    = fetch_country_info(country)
+    iso3 = ISO3_MAP.get(country, country[:3].upper())
+    prov = fetch_wb_stability_with_provenance(iso3)
+    score = prov["value"]
+    ci = fetch_country_info(country)
     return {
         "country":        country,
         "iso3":           iso3,
         "wb_stability":   round(score, 3) if score is not None else "unavailable",
         "stability_band": (
-            "HIGH"   if score and score > 0.5 else
-            "MEDIUM" if score and score > -0.5 else
-            "LOW"
+            "HIGH"   if score is not None and score > 0.5  else
+            "MEDIUM" if score is not None and score > -0.5 else
+            "LOW"    if score is not None else
+            "UNKNOWN — no live or static data available for this country"
         ),
+        "data_provenance": prov.get("source", "unknown"),
+        "is_live":         prov.get("is_live", False),
         "region":    ci["region"]    if ci else "Unknown",
         "subregion": ci["subregion"] if ci else "Unknown",
     }

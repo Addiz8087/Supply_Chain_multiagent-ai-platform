@@ -1,0 +1,4 @@
+Run type,n,Mean,Min,Max
+Scripted baseline — diverse tools,5,0.5,0.4333,0.5333
+Scripted baseline — repetitive tool,4,0.3411,0.3257,0.3565
+LLM-driven orchestrator runs,25,0.6064,0.5256,0.6953

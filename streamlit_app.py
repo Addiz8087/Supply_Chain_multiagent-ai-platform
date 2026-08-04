@@ -14,8 +14,47 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import threading
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 from services.glass_ui import inject_glass_ui
+# RAGSimulationAgent import removed — the RAG/Mesa lithium-stockpiling
+# module is out of scope for the approved OREMS ethics application and
+# is no longer wired into the orchestrator (see agents/orchestrator.py).
 
+def _run_orchestrator_background(goal, session_state):
+    """Runs off the main Streamlit thread so switching pages can't kill it."""
+    try:
+        orch = OrchestratorAgent(verbose=False)
+        result = orch.run(goal)
+        session_state["last_analysis_result"] = result
+        session_state["analysis_status"] = "done"
+    except Exception as e:
+        session_state["analysis_error"] = str(e)
+        session_state["analysis_status"] = "error"
+
+
+def _run_batch_background(goals, session_state):
+    """Runs a list of goals ONE AT A TIME (not in parallel — parallel calls
+    would make the Mistral free-tier rate-limiting worse, not better).
+    Updates progress after each goal so the UI can show live status. Each
+    goal is still saved to the database individually via orch.run(), exactly
+    like a single manual run, so nothing else downstream (export_agency_
+    report.py etc.) needs to change."""
+    session_state["batch_results"] = []
+    session_state["batch_total"] = len(goals)
+    for i, g in enumerate(goals):
+        g = g.strip()
+        if not g:
+            continue
+        session_state["batch_current"] = i + 1
+        session_state["batch_current_goal"] = g
+        try:
+            orch = OrchestratorAgent(verbose=False)
+            result = orch.run(g)
+            session_state["batch_results"].append({"goal": g, "status": "done", "result": result})
+        except Exception as e:
+            session_state["batch_results"].append({"goal": g, "status": "error", "error": str(e)})
+    session_state["batch_status"] = "done"
 # ── Page config (must be first Streamlit call) ─────────────────────────────
 st.set_page_config(
     page_title  = "Supply Chain AI Platform",
@@ -47,12 +86,14 @@ from services.echelon_knowledge import (
     tool_identify_echelon_bottleneck, tool_customer_demand_signal,
 )
 from services.data_sources import list_sources
-from services.usgs_reference import VERIFIED_PRODUCTION
 from services.live_data import (
     fetch_all_prices, fetch_live_price, production_map_data,
     PRODUCTION_DATA, STATIC_PRICES,
 )
 from services.mistral_service import get_mistral_service
+# usgs_reference and rag_knowledge imports removed — those modules are
+# out of scope for the approved OREMS ethics application and are no
+# longer used anywhere in this app.
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -143,7 +184,7 @@ with st.sidebar:
     st.divider()
     with st.expander("ℹ️ System Info"):
         st.caption(f"Model: mistral-small-latest")
-        st.caption(f"Agents: 5 (Orchestrator + 4 Specialists)")
+        st.caption(f"Agents: 6 (Orchestrator + 5 Specialists)")
         st.caption(f"Tools: {len(HW_DEPS) + len(SUPPLY_CHAIN)} domain items")
         st.caption("APIs: World Bank · USGS · UN Comtrade · REST Countries")
         st.caption("Cost: £0 — all free tier")
@@ -259,31 +300,80 @@ elif page == "🤖 Run Analysis":
         st.write("")
 
     default_goal = presets[preset_choice]
-    goal = st.text_area("Analysis goal (edit or write your own)", value=default_goal, height=100)
+    # Bind the text box to session_state so a typed edit survives the
+    # rerun that happens when you click "Run" — previously the box was
+    # rebuilt from the preset on every rerun, silently discarding
+    # whatever you'd typed the moment the analysis finished.
+    if st.session_state.get("_last_preset") != preset_choice:
+        st.session_state["_last_preset"] = preset_choice
+        st.session_state["goal_input"] = default_goal
+    goal = st.text_area("Analysis goal (edit or write your own)",
+                         key="goal_input", height=100)
 
     col_a, col_b = st.columns([1, 4])
     with col_a:
         run_btn = st.button("🚀 Run Multi-Agent Analysis", type="primary", use_container_width=True)
 
     if run_btn and goal.strip():
-        with st.spinner("Orchestrating agents…"):
-            progress = st.empty()
-            progress.info("Step 1/3 — Orchestrator generating delegation plan…")
+        # Clear any previous run's state before starting a fresh one
+        st.session_state["analysis_status"] = "running"
+        st.session_state["analysis_start_time"] = time.time()
+        st.session_state.pop("last_analysis_result", None)
+        st.session_state.pop("analysis_error", None)
 
-            orch = OrchestratorAgent(verbose=False)
-
-            try:
-                progress.info("Step 2/3 — Specialist agents executing tasks…")
-                result = orch.run(goal)
-                # Save the result so it survives page switches / reruns
-                st.session_state["last_analysis_result"] = result
-                progress.success(f"✅ Analysis complete — Run #{result['run_id']}")
-            except Exception as e:
-                st.error(f"Analysis failed: {e}")
-                st.stop()
+        # Run the orchestrator on a background thread. Unlike running it
+        # directly in the script body, this survives the user navigating
+        # to another page — Streamlit interrupting/rerunning the script
+        # does NOT stop this thread, since it's independent of the
+        # script's own execution lifecycle.
+        thread = threading.Thread(
+            target=_run_orchestrator_background,
+            args=(goal, st.session_state),
+            daemon=True,
+        )
+        add_script_run_ctx(thread)  # lets the thread safely touch session_state
+        thread.start()
+        st.session_state["analysis_thread"] = thread
 
     elif run_btn and not goal.strip():
         st.warning("Please enter a goal before running.")
+
+    # ── Status banner: shown whether we just clicked Run, or navigated
+    #    back to this page while a background run is still in progress
+    status = st.session_state.get("analysis_status")
+
+    if status == "running":
+        elapsed = time.time() - st.session_state.get("analysis_start_time", time.time())
+        mins, secs = divmod(int(elapsed), 60)
+        st.info(
+            f"⏳ Orchestrator is working ({mins}m {secs}s elapsed). Feel free "
+            f"to browse other pages — the analysis keeps running in the "
+            f"background. Just come back to this page and it'll show the "
+            f"finished report automatically once it's done."
+        )
+        if elapsed > 240:  # 4 minutes — should be well past normal completion
+            st.warning(
+                "This is taking much longer than usual (normal runs finish "
+                "in under 4 minutes). This almost always means the Mistral "
+                "API is rate-limiting your requests. **Check the terminal "
+                "window** where you ran `streamlit run` — if you see "
+                "`⏳ Rate limit — waiting...` messages repeating, that's "
+                "confirmed. Wait a minute for the rate limit to clear, then "
+                "use the button below to reset and try again with a "
+                "simpler goal (or fewer agents)."
+            )
+            if st.button("🔄 Reset stuck analysis"):
+                st.session_state["analysis_status"] = None
+                st.session_state.pop("analysis_start_time", None)
+                st.session_state.pop("last_analysis_result", None)
+                st.session_state.pop("analysis_error", None)
+                st.rerun()
+    elif status == "error":
+        st.error(f"Analysis failed: {st.session_state.get('analysis_error')}")
+    elif status == "done" and "last_analysis_result" in st.session_state:
+        st.success(
+            f"✅ Analysis complete — Run #{st.session_state['last_analysis_result']['run_id']}"
+        )
 
     # ── Show the most recent result, even after switching to another page
     #    and coming back — pulled from session_state, not a local variable
@@ -298,6 +388,21 @@ elif page == "🤖 Run Analysis":
             f'<div class="report-box">{result_holder["final_report"]}</div>',
             unsafe_allow_html=True,
         )
+        with st.expander("ℹ️ Data provenance & limitations (read before citing figures)"):
+            st.markdown(
+                "- **Verified/cited data**: mineral production figures, country "
+                "stability scores, and trade patterns are drawn from USGS "
+                "Mineral Commodity Summaries and World Bank governance "
+                "indicators (see the Data Sources page).\n"
+                "- **AI-synthesised narrative**: risk assessments, "
+                "recommendations, and scenario impact descriptions above are "
+                "generated by the LLM, grounded in the tool outputs from this "
+                "run — not independently fact-checked line by line.\n"
+                "- **Any specific number** (e.g. a dollar figure or "
+                "percentage) not visible in the Agent Summaries' tool outputs "
+                "below should be treated as an illustrative estimate, not a "
+                "verified fact, and reported as such in the dissertation."
+            )
 
         st.divider()
 
@@ -342,6 +447,75 @@ elif page == "🤖 Run Analysis":
             for i, step in enumerate(result_holder["plan"], 1):
                 st.markdown(f"**{i}. {step['agent']}**")
                 st.caption(step["task"])
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════
+    #  BATCH RUN — for collecting dissertation evaluation data across
+    #  several varied goals without manually clicking Run each time.
+    #  Runs SEQUENTIALLY (not parallel) to avoid stacking Mistral
+    #  rate-limit retries on top of each other.
+    # ══════════════════════════════════════════════════════════════════
+    st.markdown("### 📦 Batch Run (multiple goals, one after another)")
+    st.caption(
+        "Paste one goal per line. Each is run sequentially and saved to "
+        "the database exactly like a single manual run — use this to "
+        "collect varied evaluation data for your Results chapter without "
+        "clicking Run 9 separate times."
+    )
+    default_batch = (
+        "Assess supply chain resilience of an AI server's memory chips (HBM)\n"
+        "Analyse geopolitical risk for Gallium, Germanium, Rare Earth Elements\n"
+        "Analyse geopolitical risk for Cobalt and Lithium in EV battery manufacturing\n"
+        "Trace full source-to-customer chain for a smartphone chipset\n"
+        "Simulate a China gallium export ban and its impact on AI hardware supply\n"
+        "Simulate a Taiwan semiconductor disruption scenario\n"
+        "Identify chokepoints across an AI datacentre hardware portfolio\n"
+        "Compare mineral risk for silicon vs rare earths in AI chip production\n"
+        "Assess resilience of AMD AI GPU, board-ready report"
+    )
+    batch_text = st.text_area("Remaining goals (one per line)", value=default_batch, height=200)
+
+    batch_status = st.session_state.get("batch_status")
+    batch_running = batch_status == "running"
+
+    if st.button("🚀 Run Batch (sequential)", disabled=batch_running):
+        goals = [g for g in batch_text.split("\n") if g.strip()]
+        st.session_state["batch_status"] = "running"
+        st.session_state["batch_results"] = []
+        st.session_state["batch_current"] = 0
+        st.session_state["batch_total"] = len(goals)
+        t = threading.Thread(target=_run_batch_background, args=(goals, st.session_state), daemon=True)
+        add_script_run_ctx(t)
+        t.start()
+        st.rerun()
+
+    if batch_status == "running":
+        cur = st.session_state.get("batch_current", 0)
+        total = st.session_state.get("batch_total", 0)
+        cur_goal = st.session_state.get("batch_current_goal", "")
+        st.info(f"⏳ Running goal {cur} of {total}: *{cur_goal}*")
+        st.progress(cur / total if total else 0)
+        st.caption("This page auto-refreshes if you stay on it, or check back after a few minutes.")
+        time.sleep(3)
+        st.rerun()
+    elif batch_status == "done":
+        results = st.session_state.get("batch_results", [])
+        n_done = sum(1 for r in results if r["status"] == "done")
+        n_err = sum(1 for r in results if r["status"] == "error")
+        st.success(f"✅ Batch complete — {n_done} succeeded, {n_err} failed")
+        for r in results:
+            icon = "✅" if r["status"] == "done" else "❌"
+            with st.expander(f"{icon} {r['goal']}"):
+                if r["status"] == "done":
+                    st.markdown(r["result"]["final_report"][:1500] +
+                                 ("..." if len(r["result"]["final_report"]) > 1500 else ""))
+                else:
+                    st.error(r["error"])
+        if st.button("Clear batch results"):
+            st.session_state.pop("batch_status", None)
+            st.session_state.pop("batch_results", None)
+            st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -888,26 +1062,6 @@ elif page == "📚 Data Sources":
             st.caption(f"Type: {src['type']}  ·  Update cycle: {src['update_cycle']}")
             st.write(src["covers"])
             st.markdown(f"[{src['url']}]({src['url']})")
-    st.divider()
-    st.markdown("#### ✅ Manually Verified Figures (USGS MCS 2025)")
-    st.caption(
-        "The reference PDF is bundled directly in this repo at "
-        "`data/reference_docs/mcs2025.pdf` — not just cited from memory. "
-        "The figures below have been individually cross-checked line-by-line "
-        "against its published tables, with the exact page number recorded, "
-        "as distinct from estimated/unverified figures used elsewhere."
-    )
-    for mineral, vdata in VERIFIED_PRODUCTION.items():
-        with st.container(border=True):
-            st.markdown(f"**{mineral}** — verified against page {vdata['page']}")
-            st.caption(f"{vdata['source']} · {vdata['unit']} · {vdata['year']}")
-            vp_df = pd.DataFrame({
-                "Country": list(vdata["countries"].keys()),
-                "Production": list(vdata["countries"].values()),
-            }).sort_values("Production", ascending=False)
-            st.dataframe(vp_df, use_container_width=True, hide_index=True)
-            st.markdown(f"[View source PDF]({vdata['source_url']})")
-
     st.divider()
     st.markdown("#### How provenance is enforced in this codebase")
     st.write(

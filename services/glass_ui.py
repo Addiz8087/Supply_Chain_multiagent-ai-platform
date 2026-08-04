@@ -823,6 +823,61 @@ span[style*="MaterialIcons"],
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   FILE UPLOADER — glass-styled dropzone, extra breathing room so
+   the icon and instruction text can never visually overlap
+   ═══════════════════════════════════════════════════════════════ */
+[data-testid="stFileUploaderDropzone"] {
+    background: rgba(255,255,255,0.55) !important;
+    border: 1.5px dashed rgba(99,102,241,0.35) !important;
+    border-radius: 12px !important;
+    padding: 14px 16px !important;
+    gap: 8px !important;
+}
+
+/* Mute ALL native icon/text inside the instructions area — regardless of
+   whether it's an svg, span, i, or leftover icon-font ligature text —
+   by collapsing its font-size to zero, then draw one clean label
+   ourselves via ::before. This can't overlap because nothing else in
+   here is visible. */
+[data-testid="stFileUploaderDropzoneInstructions"] {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    font-size: 0 !important;
+    line-height: 0 !important;
+    position: relative !important;
+    min-height: 28px !important;
+}
+
+[data-testid="stFileUploaderDropzoneInstructions"] * {
+    font-size: 0 !important;
+}
+
+[data-testid="stFileUploaderDropzoneInstructions"] svg {
+    display: none !important;
+}
+
+/* The one visible label, drawn cleanly instead of relying on
+   whatever native markup was overlapping */
+[data-testid="stFileUploaderDropzoneInstructions"]::before {
+    content: "📤  Drag and drop files here, or click Browse" !important;
+    font-size: 14px !important;
+    line-height: 1.4 !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    color: var(--text-secondary) !important;
+}
+
+/* Keep the "Browse files" button itself visible and normal-sized —
+   it's a real <button>, not text content, so font-size:0 above
+   doesn't blank it out; this just makes sure of it. */
+[data-testid="stFileUploaderDropzone"] button {
+    font-size: 14px !important;
+}
+[data-testid="stFileUploaderDropzone"] button * {
+    font-size: 14px !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════
    REDUCE MOTION
    ═══════════════════════════════════════════════════════════════ */
 @media (prefers-reduced-motion: reduce) {
@@ -839,8 +894,12 @@ span[style*="MaterialIcons"],
   // Clears text from any span whose font-family contains "Material"
   // This fires immediately AND watches for dynamic Streamlit re-renders
   function killMaterialText(root) {
-    var spans = (root || document).querySelectorAll('span[style]');
-    spans.forEach(function(el) {
+    // Broadened from 'span[style]' to any element, since the file
+    // uploader's icon can be a <span> or <i> depending on Streamlit
+    // version — both leave a raw ligature name ("upload", "cloud_upload")
+    // as fallback text before the icon font paints over it.
+    var iconEls = (root || document).querySelectorAll('[style]');
+    iconEls.forEach(function(el) {
       var style = el.getAttribute('style') || '';
       if (style.toLowerCase().indexOf('material') !== -1) {
         el.textContent = '';
@@ -849,6 +908,20 @@ span[style*="MaterialIcons"],
     // Also catch by data-testid
     var toggleIcons = (root || document).querySelectorAll('[data-testid="stExpanderToggleIcon"]');
     toggleIcons.forEach(function(el) { el.textContent = ''; });
+
+    // File uploader: clear any stray literal icon-ligature text
+    // ("upload", "cloud_upload", etc.) that renders behind/next to the
+    // "Browse files" button label, causing overlapping text.
+    var uploaderIcons = (root || document).querySelectorAll(
+      '[data-testid="stFileUploaderDropzoneInstructions"] span, ' +
+      '[data-testid="stFileUploaderDropzoneInstructions"] i'
+    );
+    uploaderIcons.forEach(function(el) {
+      var txt = (el.textContent || '').trim().toLowerCase();
+      if (txt === 'upload' || txt === 'cloud_upload' || txt === 'file_upload') {
+        el.textContent = '';
+      }
+    });
   }
 
   // Run immediately once DOM ready
