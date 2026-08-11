@@ -40,10 +40,17 @@ MISTRAL_MODEL: str   = _get_secret("MISTRAL_MODEL", "mistral-small-latest")
 MISTRAL_URL: str     = "https://api.mistral.ai/v1/chat/completions"
 
 # ── Agent behaviour ────────────────────────────────────────────────────────
-MAX_RETRIES: int      = 10
-RETRY_DELAY: float    = 22.0      # seconds — respects free-tier rate limits
-MAX_TOKENS: int       = 1400
-AGENT_MAX_STEPS: int  = 20
+# NOTE: these were previously (10, 22.0, 1400, 20). On the Mistral free
+# tier that meant a single rate-limited call could block for up to
+# 220 seconds, and each specialist agent could take up to 20 ReAct steps
+# to finish — with 4 agents per goal, that's how a batch of 9 goals ended
+# up taking ~30 minutes and occasionally stalling out. These lower values
+# keep runs fast while still giving each agent enough steps to call its
+# tools and finish.
+MAX_RETRIES: int      = 4
+RETRY_DELAY: float    = 8.0       # real Retry-After header (if present) still overrides this
+MAX_TOKENS: int        = 800
+AGENT_MAX_STEPS: int   = 8
 
 # ── RAG pipeline ────────────────────────────────────────────────────────
 CHROMA_DB_PATH: str = str(_ROOT / "data" / "chroma_db")

@@ -406,6 +406,13 @@ class OrchestratorAgent:
         # re-enable it later, if you get supervisor sign-off.
     }
 
+    # Class-level (NOT self.) so the cooldown is shared across every
+    # OrchestratorAgent instance in this process — the batch runner in
+    # streamlit_app.py creates a fresh instance per goal, so an
+    # instance-level flag would never actually throttle anything.
+    _last_snapshot_ts: float = 0.0
+    SNAPSHOT_COOLDOWN_SECONDS: float = 3600.0  # refresh mineral/country data at most once an hour
+
     def __init__(self, verbose: bool = True):
         self.verbose   = verbose
         self.memory    = PersistentMemory()
@@ -540,18 +547,31 @@ class OrchestratorAgent:
         # full ordered sequence, goal alignment, pipeline deviation) —
         # previously computed every run but only printed, never saved.
         self.memory.save_agency_metrics(run_id, agency_scores)
-        # Save mineral snapshots
-        for mineral in SUPPLY_CHAIN:
-            geo = tool_assess_geo_risk(mineral)
-            self.memory.save_mineral_snapshot(mineral, RISK_W.get(mineral, 1), geo["risk_level"], run_id)
-        # Save country stability
-        for country, iso3 in list(ISO3_MAP.items())[:8]:
-            score = fetch_wb_stability(iso3)
-            if score is not None:
-                from services.knowledge_base import fetch_country_info
-                ci = fetch_country_info(country)
-                region = ci["region"] if ci else "Unknown"
-                self.memory.save_country_stability(country, iso3, score, region)
+
+        # ── Mineral/country snapshots ────────────────────────────────────
+        # This block hits ~70 live HTTP endpoints (World Bank, REST
+        # Countries, GDELT — 15s timeout each, per mineral/country) and
+        # used to run after EVERY goal. In a 9-goal batch that meant
+        # paying that cost 9 times for data that barely changes minute
+        # to minute. It's now throttled to once per hour, shared across
+        # ALL OrchestratorAgent instances in this process (class-level
+        # attribute, since the batch runner creates a fresh instance per
+        # goal) — this was the single biggest cause of slow/stalled
+        # batch runs.
+        if time.time() - OrchestratorAgent._last_snapshot_ts > self.SNAPSHOT_COOLDOWN_SECONDS:
+            for mineral in SUPPLY_CHAIN:
+                geo = tool_assess_geo_risk(mineral)
+                self.memory.save_mineral_snapshot(mineral, RISK_W.get(mineral, 1), geo["risk_level"], run_id)
+            for country, iso3 in list(ISO3_MAP.items())[:8]:
+                score = fetch_wb_stability(iso3)
+                if score is not None:
+                    from services.knowledge_base import fetch_country_info
+                    ci = fetch_country_info(country)
+                    region = ci["region"] if ci else "Unknown"
+                    self.memory.save_country_stability(country, iso3, score, region)
+            OrchestratorAgent._last_snapshot_ts = time.time()
+        else:
+            self._log("  ⏭  Snapshot refresh skipped (mineral/country data updated <1h ago).")
 
         self._log(f"\n  💾 Run #{run_id} saved to persistent memory.")
         self._log("\n" + "═" * 65)
