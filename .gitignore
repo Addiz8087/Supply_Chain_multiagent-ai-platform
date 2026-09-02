@@ -9,7 +9,7 @@ __pycache__/
 pyvenv.cfg
 
 # Local persistent memory DB
-data/*.db
+
 
 # OS / editor
 .DS_Store
